@@ -7,6 +7,8 @@ Cross-platform Python/Tkinter CANopen diagnostics and settings utility for Sevco
 ## Features
 
 - Select serial port, CAN bitrate and CANopen node ID
+- Separate CANdapter link status from verified CANopen controller communication (fresh SDO identity request at 0x1018:01)
+- Recheck controller communication with **Verify controller**; clear cached settings on disconnect
 - Read CANopen identity, error register and **individual active Sevcon fault IDs**, and request **controller-provided text descriptions** (0x5300 / 0x5610)
 - Read predefined battery protection thresholds, displaying volts alongside raw values
 - Explicit write confirmation, read-before-write, and read-back verification
@@ -54,3 +56,6 @@ The browser displays the EDS description, data type, access flags, default and d
 EDS entries marked writable may be edited only after a successful live read, explicit confirmation and identical read-back. Objects marked read-only cannot be edited. Actual Sevcon authentication, firmware limits, operational-state requirements and persistent saving are independent of EDS permission flags. **Back up controller configuration and keep propulsion disabled before writing settings.**
 
 Tests: `python -m unittest discover -s tests -v`
+## Communication verification
+
+**Connect** opens the Ewert CANdapter serial link and then requests CANopen identity object `0x1018:01` using the selected node ID. The status first reports **CANdapter open — controller unverified**; only a valid SDO response changes it to **Controller verified**. An adapter acknowledgement by itself does not prove controller communication. Use **Verify controller** to repeat the request. A timeout reports controller not responding; check CAN bitrate, node ID, wiring and power. Status verification is a point-in-time check, not ongoing heartbeat supervision. The app has not yet been hardware-tested.

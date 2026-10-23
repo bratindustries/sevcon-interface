@@ -153,6 +153,7 @@ class GUI:
         ttk.Label(settings,text='Saving is a separate operation using CANopen 1010:01. It may require Sevcon authorization and Pre-operational state. Acknowledgement is not a power-cycle persistence test.',wraplength=900).pack(anchor='w',padx=12,pady=8)
         self.update_selected()
         self.build_eds_tab(tabs)
+        self.build_security_tab(tabs)
         logframe=ttk.LabelFrame(root,text='Communication log');logframe.pack(fill='both',expand=False,padx=10,pady=6)
         self.log=tk.Text(logframe,height=9,font=('Consolas',9));self.log.pack(fill='both',expand=True)
         self.refresh_ports();self.root.after(50,self.pump);root.protocol('WM_DELETE_WINDOW',self.quit)
@@ -182,6 +183,46 @@ class GUI:
         self.eds_new=tk.StringVar();ttk.Entry(edit,textvariable=self.eds_new,width=28).pack(side='left',padx=8)
         ttk.Button(edit,text='Apply change…',command=self.eds_write).pack(side='left',padx=4)
         ttk.Label(page,text='Writes require EDS write access, a matching live read, confirmation and read-back. No automatic save to controller memory.',wraplength=940).pack(anchor='w',padx=12,pady=4)
+
+    def build_security_tab(self, tabs):
+        page=ttk.Frame(tabs);tabs.add(page,text='Security')
+        ttk.Label(page,text='Read-only Sevcon access and controller state diagnostics. No login, unlock or state changes are sent.',wraplength=940).pack(anchor='w',padx=12,pady=12)
+        ttk.Button(page,text='Refresh security information',command=self.read_security).pack(anchor='w',padx=12,pady=5)
+        self.security_values={}
+        for label,key in [('Security access level (5000:01)','level'),
+                          ('Operational state (5110:00)','state'),
+                          ('Detailed SDO error reason (5310:00)','reason')]:
+            row=ttk.Frame(page);row.pack(fill='x',padx=12,pady=8)
+            ttk.Label(row,text=label,width=38).pack(side='left')
+            variable=tk.StringVar(value='Not read')
+            ttk.Label(row,textvariable=variable,wraplength=540).pack(side='left')
+            self.security_values[key]=variable
+        ttk.Label(page,text='Note: 5310:00 may be unsupported or firmware-specific. Failed reads are reported individually. Access levels do not guarantee permission to write a particular object.',wraplength=940).pack(anchor='w',padx=12,pady=14)
+
+    def read_security(self):
+        probes=[('level',0x5000,1),('state',0x5110,0),('reason',0x5310,0)]
+        for key,_,_ in probes:self.security_values[key].set('Reading…')
+        def work():
+            for key,index,sub in probes:
+                try:
+                    raw=self.sdo(index,sub)
+                    value=int.from_bytes(raw,'little')
+                    if key=='level':
+                        label={1:'User',2:'Service Engineer',3:'Dealer',
+                               4:'OEM Engineering',5:'Sevcon Engineering'}.get(value,'Unknown level')
+                        shown=f'{value} — {label}  [raw: {raw.hex(" ").upper()}]'
+                    elif key=='state':
+                        label={0x05:'Operational',0x7F:'Pre-operational',
+                               0x04:'Stopped'}.get(value,'Firmware-specific / unknown')
+                        shown=f'0x{value:X} — {label}  [raw: {raw.hex(" ").upper()}]'
+                    else:
+                        # Do not claim a generic 5310 value is a particular
+                        # security failure without firmware-specific mapping.
+                        shown=f'{value} (0x{value:X}) — raw diagnostic reason'
+                    self.events.put(('ui',lambda k=key,v=shown:self.security_values[k].set(v)))
+                except Exception as exc:
+                    self.events.put(('ui',lambda k=key,e=str(exc):self.security_values[k].set('Unavailable: '+e)))
+        self.job(work)
 
     def open_eds(self):
         path=filedialog.askopenfilename(filetypes=[('CANopen EDS','*.eds'),('All files','*.*')])
@@ -298,6 +339,7 @@ class GUI:
         if self.dev:self.dev.close();self.dev=None
         self.session+=1;self.verified=False;self.connected_node=None
         self.last_read=None;self.eds_last=None
+        for field in getattr(self,'security_values',{}).values():field.set('Not read')
         self.status.set('Disconnected')
         self.val.set('Current value: not read')
         self.eds_current.set('Value: not read')

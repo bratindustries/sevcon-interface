@@ -124,7 +124,7 @@ class GUI:
         self.tree=ttk.Treeview(diag,columns=('obj','raw','value','result'),show='headings',height=17)
         for col,w in [('obj',335),('raw',160),('value',240),('result',150)]:self.tree.heading(col,text=col.title());self.tree.column(col,width=w)
         self.tree.pack(fill='both',expand=True)
-        ttk.Label(diag,text='Fault IDs are reported as raw values; interpretation requires the firmware-specific Sevcon fault reference.').pack(anchor='w',padx=5)
+        ttk.Label(diag,text='Active Sevcon fault IDs and controller-provided descriptions are read via 0x5300 and 0x5610. Fault selectors change diagnostic selection only.').pack(anchor='w',padx=5)
         settings=ttk.Frame(tabs);tabs.add(settings,text='Settings')
         ttk.Label(settings,text='Select a battery setting. Values are displayed in volts, with the original CANopen bytes shown below.',wraplength=900).pack(anchor='w',padx=12,pady=10)
         selector=ttk.Frame(settings);selector.pack(fill='x',padx=12,pady=6)
@@ -284,27 +284,81 @@ class GUI:
             finally:self.events.put(('ui',lambda:setattr(self,'busy',False)))
         threading.Thread(target=wrapper,daemon=True).start()
     def sdo(self,index,sub,raw=None):
+        """Read/write one CANopen SDO. Uploads support expedited and segmented values."""
         nid=self.node_id()
         while not self.dev.frames.empty():self.dev.frames.get_nowait()
         if raw is None:frame=bytes([0x40,index&255,index>>8,sub,0,0,0,0])
         else:
             if len(raw) not in (1,2,4):raise ValueError('Write must be 1, 2, or 4 bytes')
-            frame=bytes([0x23+(4-len(raw))*4,index&255,index>>8,sub])+raw.ljust(4,b'\0')
+            frame=bytes([0x23+(4-len(raw))*4,index&255,index>>8,sub])+raw.ljust(4,b'\\0')
+        def reply(expected_index=True):
+            end=time.monotonic()+2.5
+            while time.monotonic()<end:
+                try:cid,r=self.dev.frames.get(timeout=min(.1,max(.01,end-time.monotonic())))
+                except queue.Empty:continue
+                if cid!=0x580+nid or len(r)!=8:continue
+                if expected_index and r[1:4]!=frame[1:4]:continue
+                if r[0]==0x80:
+                    raise RuntimeError(f'SDO abort 0x{int.from_bytes(r[4:8],"little"):08X} at {index:04X}:{sub:02X}')
+                return r
+            raise TimeoutError(f'No SDO response to {index:04X}:{sub:02X}; check bitrate and node ID')
         self.dev.send(0x600+nid,frame)
-        end=time.monotonic()+2.5
-        while time.monotonic()<end:
-            try:cid,r=self.dev.frames.get(timeout=min(.1,max(.01,end-time.monotonic())))
-            except queue.Empty:continue
-            if cid!=0x580+nid or len(r)<8 or r[1:4]!=frame[1:4]:continue
-            if r[0]==0x80:raise RuntimeError(f'SDO abort 0x{int.from_bytes(r[4:8],"little"):08X} at {index:04X}:{sub:02X}')
-            if raw is not None:
-                if r[0]!=0x60:raise ValueError('Unexpected write acknowledgment '+r.hex())
-                return raw
-            if r[0]&0xE0!=0x40:raise ValueError('Unexpected SDO reply '+r.hex())
-            if not (r[0]&0x02):raise ValueError('Segmented upload not implemented for this object')
+        r=reply()
+        if raw is not None:
+            if r[0]!=0x60:raise ValueError('Unexpected SDO write reply '+r.hex())
+            return raw
+        if r[0]&0xE0!=0x40:raise ValueError('Unexpected SDO reply '+r.hex())
+        if r[0]&0x02:
             length=4-((r[0]>>2)&3) if r[0]&1 else 4
             return r[4:4+length]
-        raise TimeoutError(f'No SDO response to {index:04X}:{sub:02X}; check bitrate and node ID')
+        # Segmented SDO upload: alternate the toggle bit and collect up to 4096 bytes.
+        declared=int.from_bytes(r[4:8],'little') if r[0]&1 else None
+        if declared is not None and declared>4096:
+            raise ValueError('SDO response exceeds 4096-byte diagnostic limit')
+        parts=bytearray();toggle=0
+        for _ in range(586):
+            self.dev.send(0x600+nid,bytes([0x60 | (toggle<<4)])+bytes(7))
+            segment=reply(expected_index=False)
+            if segment[0]&0xE0!=0 or ((segment[0]>>4)&1)!=toggle:
+                raise ValueError('Invalid segmented SDO response or toggle bit')
+            last=bool(segment[0]&1)
+            unused=(segment[0]>>1)&7 if last else 0
+            if unused>7:raise ValueError('Invalid segmented SDO length')
+            parts.extend(segment[1:8-unused])
+            if len(parts)>4096:raise ValueError('Segmented SDO exceeds 4096 bytes')
+            if last:
+                if declared is not None and len(parts)!=declared:
+                    raise ValueError('Segmented SDO declared size does not match received data')
+                return bytes(parts)
+            toggle^=1
+        raise TimeoutError('Segmented SDO did not terminate')
+
+    def _fault_selector_write(self,index,sub,value,lengths=(1,2,4)):
+        """Select a Sevcon diagnostic entry, trying permitted expedited widths."""
+        errors=[]
+        for length in lengths:
+            try:
+                return self.sdo(index,sub,value.to_bytes(length,'little'))
+            except (RuntimeError, ValueError) as exc:
+                errors.append(f'{length}-byte: {exc}')
+                # Only retry after rejected write; do not hide transport timeouts.
+        raise RuntimeError('Fault selection failed: '+'; '.join(errors))
+
+    def _fault_text(self,fault_id):
+        # The controller itself supplies the description through 5610:02.
+        self._fault_selector_write(0x5610,1,fault_id)
+        raw=self.sdo(0x5610,2)
+        return raw.split(b'\\0',1)[0].decode('utf-8','replace').strip() or '(empty fault description)'
+
+    def _show_fault(self,priority,fault_id,description,raw):
+        self.tree.insert('','end',values=(
+            f'Active fault #{priority+1} [5300:03]',
+            raw.hex(' ').upper(),
+            f'0x{fault_id:X}: {description}',
+            'FAULT'))
+        self.samples.append((datetime.datetime.now().isoformat(),
+            f'Active fault #{priority+1}', '5300:03',
+            raw.hex(' ').upper(), f'0x{fault_id:X}: {description}'))
     def display(self,name,i,s,b):
         raw=b.hex(' ').upper();value=decode_value(i,s,b)
         self.events.put(('ui',lambda name=name,i=i,s=s,raw=raw,value=value,b=b:self._add(name,i,s,raw,value,b)))
@@ -322,11 +376,29 @@ class GUI:
         self.job(work)
     def read_faults(self):
         def work():
-            for name,i,s in [('Error register',0x1001,0),('Error history count',0x1003,0),('Sevcon active count',0x5300,1)]:
+            for name,i,s in [('Error register',0x1001,0),('Error history count',0x1003,0)]:
                 try:self.display(name,i,s,self.sdo(i,s))
                 except Exception as e:self.events.put(('ui',lambda e=e:self.info(str(e))))
-            # Sevcon selection register: writing 0 changes diagnostic selection only.
-            # Avoid selecting faults automatically until object layout verified on device.
+            count_raw=self.sdo(0x5300,1)
+            self.display('Sevcon active fault count',0x5300,1,count_raw)
+            count=int.from_bytes(count_raw,'little')
+            if count>64:raise ValueError(f'Implausible active fault count: {count}')
+            if count==0:
+                self.events.put(('ui',lambda:self.info('No active Sevcon faults reported')))
+                return
+            for position in range(count):
+                try:
+                    self._fault_selector_write(0x5300,2,position)
+                    raw=self.sdo(0x5300,3)
+                    fault_id=int.from_bytes(raw,'little')
+                    try:description=self._fault_text(fault_id)
+                    except Exception as e:
+                        description=f'Description unavailable ({e})'
+                    self.events.put(('ui',lambda p=position,i=fault_id,t=description,b=raw:
+                        self._show_fault(p,i,t,b)))
+                except Exception as e:
+                    self.events.put(('ui',lambda p=position,e=e:
+                        self.info(f'Fault {p} read failed: {e}')))
         self.job(work)
     def selected(self):return int(self.index.get().strip().removeprefix('0x'),16),int(self.sub.get().strip().removeprefix('0x'),16)
     def update_selected(self, event=None):

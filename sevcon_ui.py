@@ -5,6 +5,7 @@ import csv, datetime, queue, threading, time, tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import serial
 from serial.tools import list_ports
+from eds_support import load_eds, decode as eds_decode, encode as eds_encode
 
 RATES = {"10000":0,"20000":1,"50000":2,"100000":3,"125000":4,"250000":5,"500000":6,"800000":7,"1000000":8}
 # Unit scaling verified for Gen4 battery voltage protection objects.
@@ -102,6 +103,7 @@ class GUI:
     def __init__(self, root):
         self.root=root;root.title('Sevcon Gen4 — CANdapter CANopen');root.geometry('1030x770')
         self.dev=None;self.busy=False;self.events=queue.Queue();self.samples=[];self.last_read=None
+        self.eds_entries=[];self.eds_visible=[];self.eds_last=None
         top=ttk.LabelFrame(root,text='Connection (Ewert CANdapter only)');top.pack(fill='x',padx=10,pady=6)
         ttk.Label(top,text='COM port').pack(side='left',padx=5)
         self.port=tk.StringVar();self.ports=ttk.Combobox(top,textvariable=self.port,width=12);self.ports.pack(side='left')
@@ -148,9 +150,103 @@ class GUI:
         ttk.Button(settings,text='Apply change…',command=self.write_one).pack(anchor='w',padx=12,pady=6)
         ttk.Label(settings,text='Changes may require controller security access. This tool does not bypass authorization or guarantee nonvolatile saving.',wraplength=900).pack(anchor='w',padx=12,pady=8)
         self.update_selected()
+        self.build_eds_tab(tabs)
         logframe=ttk.LabelFrame(root,text='Communication log');logframe.pack(fill='both',expand=False,padx=10,pady=6)
         self.log=tk.Text(logframe,height=9,font=('Consolas',9));self.log.pack(fill='both',expand=True)
         self.refresh_ports();self.root.after(50,self.pump);root.protocol('WM_DELETE_WINDOW',self.quit)
+    def build_eds_tab(self, tabs):
+        page=ttk.Frame(tabs);tabs.add(page,text='EDS browser')
+        header=ttk.Frame(page);header.pack(fill='x',padx=10,pady=8)
+        ttk.Button(header,text='Open EDS…',command=self.open_eds).pack(side='left')
+        self.eds_file=tk.StringVar(value='No EDS loaded')
+        ttk.Label(header,textvariable=self.eds_file).pack(side='left',padx=10)
+        filt=ttk.Frame(page);filt.pack(fill='x',padx=10,pady=4)
+        ttk.Label(filt,text='Search index or name').pack(side='left')
+        self.eds_query=tk.StringVar();self.eds_query.trace_add('write',lambda *_:self.filter_eds())
+        ttk.Entry(filt,textvariable=self.eds_query,width=42).pack(side='left',padx=8)
+        self.eds_tree=ttk.Treeview(page,columns=('index','name','type','access','default'),show='headings',height=15)
+        for key,width in [('index',105),('name',390),('type',130),('access',80),('default',160)]:
+            self.eds_tree.heading(key,text=key.title());self.eds_tree.column(key,width=width)
+        self.eds_tree.pack(fill='both',expand=True,padx=10)
+        self.eds_tree.bind('<<TreeviewSelect>>',self.eds_select)
+        self.eds_details=tk.StringVar(value='Load an EDS to browse its object dictionary. EDS data is descriptive, not live controller data.')
+        ttk.Label(page,textvariable=self.eds_details,wraplength=940).pack(anchor='w',padx=12,pady=6)
+        ops=ttk.Frame(page);ops.pack(fill='x',padx=10,pady=4)
+        ttk.Button(ops,text='Read selected',command=self.eds_read).pack(side='left',padx=3)
+        self.eds_current=tk.StringVar(value='Value: not read')
+        ttk.Label(ops,textvariable=self.eds_current).pack(side='left',padx=15)
+        edit=ttk.Frame(page);edit.pack(fill='x',padx=10,pady=8)
+        ttk.Label(edit,text='New typed value').pack(side='left')
+        self.eds_new=tk.StringVar();ttk.Entry(edit,textvariable=self.eds_new,width=28).pack(side='left',padx=8)
+        ttk.Button(edit,text='Apply change…',command=self.eds_write).pack(side='left',padx=4)
+        ttk.Label(page,text='Writes require EDS write access, a matching live read, confirmation and read-back. No automatic save to controller memory.',wraplength=940).pack(anchor='w',padx=12,pady=4)
+
+    def open_eds(self):
+        path=filedialog.askopenfilename(filetypes=[('CANopen EDS','*.eds'),('All files','*.*')])
+        if not path:return
+        try:entries=load_eds(path)
+        except Exception as e:messagebox.showerror('EDS load failed',str(e));return
+        self.eds_entries=entries;self.eds_file.set(path.split('/')[-1].split('\\')[-1]+f' — {len(entries)} entries')
+        self.eds_last=None;self.eds_current.set('Value: not read');self.filter_eds()
+        self.info(f'Loaded EDS: {path}; {len(entries)} entries (no controller values changed)')
+
+    def filter_eds(self):
+        if not hasattr(self,'eds_tree'):return
+        needle=self.eds_query.get().strip().lower()
+        self.eds_visible=[e for e in self.eds_entries if needle in f'{e.index:04x}:{e.subindex:02x} {e.name.lower()} {e.label.lower()}']
+        self.eds_tree.delete(*self.eds_tree.get_children())
+        for n,e in enumerate(self.eds_visible):
+            self.eds_tree.insert('','end',iid=str(n),values=(f'{e.index:04X}:{e.subindex:02X}',e.name,e.label,e.access,e.default))
+        self.eds_last=None;self.eds_current.set('Value: not read')
+
+    def eds_selected(self):
+        sel=self.eds_tree.selection()
+        return self.eds_visible[int(sel[0])] if sel else None
+
+    def eds_select(self,event=None):
+        e=self.eds_selected();self.eds_last=None;self.eds_current.set('Value: not read')
+        if e:self.eds_details.set(f'{e.name} — {e.index:04X}:{e.subindex:02X}  •  {e.label}  •  access={e.access}  •  min={e.low or "unspecified"}  •  max={e.high or "unspecified"}')
+
+    def eds_read(self):
+        e=self.eds_selected()
+        if not e:return
+        if not e.readable:messagebox.showwarning('Not readable','EDS marks this object as write-only.');return
+        if not e.expedited:messagebox.showwarning('Unsupported type','This version supports expedited integer and REAL32 SDO values only.');return
+        def work():
+            b=self.sdo(e.index,e.subindex)
+            value=eds_decode(e,b)
+            self.events.put(('ui',lambda:self.eds_show(e,b,value)))
+        self.job(work)
+
+    def eds_show(self,e,b,value):
+        if self.eds_selected()!=e:return
+        self.eds_last=(e,b)
+        self.eds_current.set(f'Current: {value}    [raw: {b.hex(" ").upper()}]')
+        self._add(e.name,e.index,e.subindex,b.hex(' ').upper(),value,b)
+
+    def eds_write(self):
+        e=self.eds_selected()
+        if not e:return
+        if not e.writable:messagebox.showwarning('Read-only','EDS does not permit writes to this object.');return
+        if not e.readable:messagebox.showwarning('Write-only object','Write-only EDS objects are not supported because read-back verification is required.');return
+        if not e.expedited:messagebox.showwarning('Unsupported type','Cannot safely write this EDS data type.');return
+        try:raw=eds_encode(e,self.eds_new.get())
+        except Exception as ex:messagebox.showerror('Invalid value',str(ex));return
+        if self.eds_last is None or self.eds_last[0]!=e:
+            messagebox.showwarning('Read first','Read this EDS object from the controller before applying a change.');return
+        old=self.eds_last[1]
+        if len(old)!=len(raw):messagebox.showerror('Length mismatch','EDS type and controller reply length differ. No write sent.');return
+        if not messagebox.askyesno('Confirm controller change',f'{e.name}  [{e.index:04X}:{e.subindex:02X}]\nOld: {eds_decode(e,old)}\nNew: {eds_decode(e,raw)}\n\nSend this change to the live controller?'):return
+        def work():
+            current=self.sdo(e.index,e.subindex)
+            if current!=old:raise RuntimeError('Controller value changed since read; read again.')
+            self.sdo(e.index,e.subindex,raw)
+            actual=self.sdo(e.index,e.subindex)
+            self.events.put(('ui',lambda:self.eds_show(e,actual,eds_decode(e,actual))))
+            if actual!=raw:raise RuntimeError('Read-back mismatch. Desired value NOT verified.')
+            self.events.put(('ui',lambda:messagebox.showinfo('Verified','Read-back matches the requested value. Persistence after power cycle is not confirmed.')))
+        self.job(work)
+
     def refresh_ports(self):
         ports=[p.device for p in list_ports.comports()];self.ports['values']=ports
         if ports and self.port.get() not in ports:self.port.set(ports[0])

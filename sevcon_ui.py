@@ -191,7 +191,7 @@ class GUI:
 
     def build_security_tab(self, tabs):
         page=ttk.Frame(tabs);tabs.add(page,text='Security')
-        ttk.Label(page,text='Read-only Sevcon access and controller state diagnostics. No login, unlock or state changes are sent.',wraplength=940).pack(anchor='w',padx=12,pady=12)
+        ttk.Label(page,text='Sevcon access diagnostics and optional credential submission. No automatic NMT state changes.',wraplength=940).pack(anchor='w',padx=12,pady=12)
         ttk.Button(page,text='Refresh security information',command=self.read_security).pack(anchor='w',padx=12,pady=5)
         self.security_values={}
         for label,key in [('Security access level (5000:01)','level'),
@@ -203,6 +203,72 @@ class GUI:
             ttk.Label(row,textvariable=variable,wraplength=540).pack(side='left')
             self.security_values[key]=variable
         ttk.Label(page,text='Note: 5310:00 may be unsupported or firmware-specific. Failed reads are reported individually. Access levels do not guarantee permission to write a particular object.',wraplength=940).pack(anchor='w',padx=12,pady=14)
+        auth=ttk.LabelFrame(page,text='Authorized login')
+        auth.pack(fill='x',padx=12,pady=8)
+        ttk.Label(auth,text='Requires a controller-specific pre-encoded response. Plain passwords are not converted by this tool.',wraplength=890).pack(anchor='w',padx=8,pady=5)
+        line=ttk.Frame(auth);line.pack(anchor='w',padx=8,pady=5)
+        ttk.Label(line,text='User ID (optional)').pack(side='left')
+        self.auth_user=tk.StringVar()
+        ttk.Entry(line,textvariable=self.auth_user,width=16).pack(side='left',padx=8)
+        ttk.Label(line,text='Encoded response (hex)').pack(side='left')
+        self.auth_token=tk.StringVar()
+        ttk.Entry(line,textvariable=self.auth_token,show='*',width=21).pack(side='left',padx=8)
+        ttk.Button(auth,text='Authorize…',command=self.authorize).pack(anchor='w',padx=8,pady=5)
+        self.auth_result=tk.StringVar(value='Not attempted')
+        ttk.Label(auth,textvariable=self.auth_result).pack(anchor='w',padx=8,pady=5)
+
+
+    def authorize(self):
+        """Submit an authorized, pre-encoded credential; never persist it."""
+        if not self.dev or not self.verified:
+            messagebox.showwarning('Not verified','Verify controller communication first.')
+            return
+        if self.busy:
+            messagebox.showwarning('Busy','Finish the current CANopen request.')
+            return
+        try:
+            token=self.auth_token.get().strip().replace(' ','')
+            if token.lower().startswith('0x'):token=token[2:]
+            if len(token) not in (2,4,8):
+                raise ValueError('Encoded response must be 1, 2 or 4 hex bytes.')
+            response=bytes.fromhex(token)
+            user=self.auth_user.get().strip()
+            user_id=None if not user else int(user,0) if user.lower().startswith('0x') else int(user)
+            if user_id is not None and not 0<=user_id<=0xFFFFFFFF:
+                raise ValueError('User ID outside 32-bit range')
+        except ValueError as exc:
+            messagebox.showerror('Invalid credentials',str(exc));return
+        if not messagebox.askyesno('Authorize controller',
+            'Send the supplied controller-specific encoded credential? '
+            'Authentication can be rejected or logged by the controller.'):
+            return
+        self.auth_token.set('')
+        self.auth_result.set('Authorization in progress…')
+        def work():
+            try:
+                previous=int.from_bytes(self.sdo(0x5000,1),'little')
+                if user_id is not None:
+                    self.sdo(0x5000,3,user_id.to_bytes(4,'little'))
+                self.sdo(0x5000,2,response)
+                level=int.from_bytes(self.sdo(0x5000,1),'little')
+                self.events.put(('ui',lambda v=level,p=previous:self._auth_complete(v,p)))
+            except Exception as exc:
+                self.events.put(('ui',lambda kind=type(exc).__name__:self._auth_error(kind)))
+        self.job(work)
+
+    def _auth_complete(self,level,previous):
+        statement=f'Controller reports level {level} (previously {previous}).'
+        self.auth_result.set(statement)
+        self.security_values['level'].set(statement)
+        self.info('Authorization transaction complete; credential withheld from log.')
+        if level<=1:
+            messagebox.showwarning('Access not elevated',statement)
+        else:
+            messagebox.showinfo('Access level read back',statement)
+
+    def _auth_error(self,error_kind):
+        self.auth_result.set('Authorization unverified: '+error_kind)
+        self.info('Authorization failed or could not be verified ('+error_kind+'); credential withheld.')
 
     def read_security(self):
         probes=[('level',0x5000,1),('state',0x5110,0),('reason',0x5310,0)]
@@ -353,6 +419,8 @@ class GUI:
         self._connection_controls(False)
         self.last_read=None;self.eds_last=None
         for field in getattr(self,'security_values',{}).values():field.set('Not read')
+        if hasattr(self,'auth_token'):self.auth_token.set('')
+        if hasattr(self,'auth_result'):self.auth_result.set('Not attempted')
         self.status.set('Disconnected')
         self.val.set('Current value: not read')
         self.eds_current.set('Value: not read')

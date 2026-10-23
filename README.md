@@ -65,3 +65,7 @@ Tests: `python -m unittest discover -s tests -v`
 The **Settings** tab has a separate **Save to Controller…** button. It requires a successfully verified controller connection and an explicit confirmation. It sends the standard CANopen store signature (ASCII `save`, little-endian value `0x65766173`) to object `0x1010:01` via an expedited SDO write. The app never invokes this automatically after changing a parameter.
 
 A positive SDO response means the store request was acknowledged, **not** that nonvolatile retention was independently verified. Safely power-cycle and reread parameters to verify persistence. The controller may reject this request because of its security access level or required NMT state; the app does not bypass access or change NMT state automatically. Use only with the motor disabled.
+
+## Security tab (read-only)
+
+The **Security** tab offers **Refresh security information** to read Sevcon access level `0x5000:01`, controller operational-state diagnostic `0x5110:00`, and detailed error reason `0x5310:00`. Results include raw values; unknown and unsupported values are not guessed. Individual read failures are shown without interrupting the others. This tab never authenticates, changes NMT state or alters controller parameters. Object availability and semantics depend on firmware.

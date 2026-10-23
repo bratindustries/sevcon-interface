@@ -4,6 +4,14 @@ Cross-platform Python/Tkinter CANopen diagnostics and settings utility for Sevco
 
 > **Development prototype, not hardware validated.** Review the firmware's object dictionary / EDS before writing configuration. No guarantee of suitability for propulsion or safety-critical use.
 
+## Interface preview
+
+### Settings tab
+
+![Sevcon Gen4 Settings tab (layout recreation)](docs/settings-tab.svg)
+
+*Illustration based on the current Tkinter controls; not a live-controller screenshot.*
+
 ## Features
 
 - Select serial port, CAN bitrate and CANopen node ID

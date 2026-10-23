@@ -7,13 +7,13 @@ Cross-platform Python/Tkinter CANopen diagnostics and settings utility for Sevco
 ## Features
 
 - Select serial port, CAN bitrate and CANopen node ID
-- Read CANopen identity and error-register objects and Sevcon active-fault data
+- Read CANopen identity, error register and **individual active Sevcon fault IDs**, and request **controller-provided text descriptions** (0x5300 / 0x5610)
 - Read predefined battery protection thresholds, displaying volts alongside raw values
 - Explicit write confirmation, read-before-write, and read-back verification
 - Export collected diagnostics to CSV
 - Communication log; supports manual SDO access
 
-Specific Sevcon fault descriptions and access unlocks are not implemented. Saving parameter changes across power cycles is not implemented. Controller-specific object mapping/scaling must be independently verified before applying writes.
+Active Sevcon fault descriptions are retrieved directly from the controller when supported by its firmware. Stored fault-log decoding and access unlocks are not implemented. The fault reader uses limited segmented SDO uploads for text descriptions (up to 4096 bytes). Fault selector SDO writes only change diagnostic selection, not fault storage or settings. Saving parameter changes across power cycles is not implemented. Controller-specific object mapping/scaling must be independently verified before applying writes.
 
 ## Run from source
 

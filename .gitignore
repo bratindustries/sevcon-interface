@@ -9,3 +9,5 @@ dist/
 .idea/
 .vscode/
 *.log
+
+.pytest_cache/

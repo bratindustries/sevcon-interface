@@ -44,3 +44,13 @@ Start read-only, with the propeller disabled and motor prevented from starting. 
 ## Status
 
 Python syntax validated only; no live CANdapter/Sevcon testing completed. This repository is an experimental starting point.
+
+## EDS object dictionary browser
+
+Open the **EDS browser** tab and choose **Open EDS…** to load your controller's firmware-matched CANopen Electronic Data Sheet (`.eds`). Search the index or object name, select a parameter and choose **Read selected**.
+
+The browser displays the EDS description, data type, access flags, default and declared limits. CANopen INTEGER8/16/32, UNSIGNED8/16/32, BOOLEAN and REAL32 values are decoded into numbers. Unsupported types (including strings, domain data and segmented transfers) are not written. EDS numeric types are **not** automatically converted into engineering units such as volts or amps: manufacturer-specific scaling requires independent verification. The existing Battery Settings tab continues to use its documented voltage conversions.
+
+EDS entries marked writable may be edited only after a successful live read, explicit confirmation and identical read-back. Objects marked read-only cannot be edited. Actual Sevcon authentication, firmware limits, operational-state requirements and persistent saving are independent of EDS permission flags. **Back up controller configuration and keep propulsion disabled before writing settings.**
+
+Tests: `python -m unittest discover -s tests -v`

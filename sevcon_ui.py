@@ -102,7 +102,7 @@ class Adapter:
 class GUI:
     def __init__(self, root):
         self.root=root;root.title('Sevcon Gen4 — CANdapter CANopen');root.geometry('1030x770')
-        self.dev=None;self.busy=False;self.events=queue.Queue();self.samples=[];self.last_read=None
+        self.dev=None;self.busy=False;self.events=queue.Queue();self.samples=[];self.last_read=None;self.session=0;self.verified=False;self.connected_node=None
         self.eds_entries=[];self.eds_visible=[];self.eds_last=None
         top=ttk.LabelFrame(root,text='Connection (Ewert CANdapter only)');top.pack(fill='x',padx=10,pady=6)
         ttk.Label(top,text='COM port').pack(side='left',padx=5)
@@ -114,6 +114,7 @@ class GUI:
         self.node=tk.StringVar(value='1');ttk.Entry(top,textvariable=self.node,width=5).pack(side='left')
         ttk.Button(top,text='Connect',command=self.connect).pack(side='left',padx=6)
         ttk.Button(top,text='Disconnect',command=self.disconnect).pack(side='left')
+        ttk.Button(top,text='Verify controller',command=self.verify_controller).pack(side='left',padx=4)
         self.status=tk.StringVar(value='Disconnected');ttk.Label(top,textvariable=self.status).pack(side='left',padx=8)
         tabs=ttk.Notebook(root);tabs.pack(fill='both',expand=True,padx=10,pady=5)
         diag=ttk.Frame(tabs);tabs.add(diag,text='Faults and diagnostics')
@@ -256,22 +257,61 @@ class GUI:
         if not 1<=n<=127:raise ValueError('CANopen node ID must be 1..127')
         return n
     def connect(self):
+        if self.busy:
+            messagebox.showwarning('Busy','Finish the active CANopen operation first.');return
         if self.dev:self.disconnect()
         try:
-            self.node_id();self.dev=Adapter(self.port.get(),self.rate.get(),self.events)
-            self.status.set('Connected');self.info('Connected; no controller settings changed')
-        except Exception as e:self.dev=None;messagebox.showerror('Connection failed',str(e))
+            nid=self.node_id()
+            if not self.port.get().strip():raise ValueError('Select a CANdapter serial port')
+            self.dev=Adapter(self.port.get(),self.rate.get(),self.events)
+            self.session+=1;self.connected_node=nid;self.verified=False
+            self.status.set('CANdapter open — controller unverified')
+            self.info('CANdapter serial link opened. Controller communication NOT yet verified.')
+            self.verify_controller()
+        except Exception as e:
+            if self.dev:self.dev.close()
+            self.dev=None
+            self.status.set('Disconnected')
+            messagebox.showerror('Connection failed',str(e))
+
+    def verify_controller(self):
+        if not self.dev:
+            messagebox.showwarning('Not connected','Connect the CANdapter first.');return
+        def work():
+            # A fresh indexed SDO reply establishes bidirectional communication.
+            response=self.sdo(0x1018,1)
+            if not response:raise ValueError('Empty controller identity response')
+            self.events.put(('ui',lambda value=int.from_bytes(response,'little'):
+                self._verified(value)))
+        self.job(work)
+
+    def _verified(self,vendor_id):
+        if not self.dev:return
+        self.verified=True
+        self.status.set(f'Controller verified — node {self.connected_node}')
+        self.info(f'Sevcon CANopen SDO reply confirmed: identity vendor 0x{vendor_id:X}')
+
     def disconnect(self):
+        if self.busy:
+            messagebox.showwarning('Busy','Wait until the active CANopen request finishes.');return
         if self.dev:self.dev.close();self.dev=None
+        self.session+=1;self.verified=False;self.connected_node=None
+        self.last_read=None;self.eds_last=None
         self.status.set('Disconnected')
+        self.val.set('Current value: not read')
+        self.eds_current.set('Value: not read')
+        self.info('Disconnected; cached values cleared')
+
     def pump(self):
         while True:
             try:e=self.events.get_nowait()
             except queue.Empty:break
-            if e[0]=='error':self.info('ADAPTER ERROR '+e[1]);continue
+            if e[0]=='error':
+                self.info('ADAPTER ERROR '+e[1]);self.verified=False
+                self.status.set('CANdapter error — check connection');continue
             if e[0]=='frame':
                 _,cid,data=e
-                if data and cid==0x580+int(self.node.get() or '1',0):self.info(f'RX {cid:03X} {data.hex(" ").upper()}')
+                if data and self.connected_node and cid==0x580+self.connected_node:self.info(f'RX {cid:03X} {data.hex(" ").upper()}')
             elif e[0]=='ui':e[1]()
         self.root.after(50,self.pump)
     def job(self,fn):
@@ -280,13 +320,25 @@ class GUI:
         self.busy=True
         def wrapper():
             try:fn()
-            except Exception as e:self.events.put(('ui',lambda e=e:self.info('ERROR: '+str(e))))
+            except Exception as e:self.events.put(('ui',lambda e=e:self._job_error(e)))
             finally:self.events.put(('ui',lambda:setattr(self,'busy',False)))
         threading.Thread(target=wrapper,daemon=True).start()
+    def _job_error(self,e):
+        self.info('ERROR: '+str(e))
+        if not self.verified:
+            self.status.set('CANdapter open — controller not responding')
+
     def sdo(self,index,sub,raw=None):
         """Read/write one CANopen SDO. Uploads support expedited and segmented values."""
-        nid=self.node_id()
-        while not self.dev.frames.empty():self.dev.frames.get_nowait()
+        nid=self.connected_node
+        if nid is None or not self.dev:raise ConnectionError('CANdapter disconnected')
+        # Drop only stale SDO responses, preserve unrelated CAN frames.
+        pending=[]
+        while True:
+            try:cid,data=self.dev.frames.get_nowait()
+            except queue.Empty:break
+            if cid!=0x580+nid:pending.append((cid,data))
+        for item in pending:self.dev.frames.put(item)
         if raw is None:frame=bytes([0x40,index&255,index>>8,sub,0,0,0,0])
         else:
             if len(raw) not in (1,2,4):raise ValueError('Write must be 1, 2, or 4 bytes')

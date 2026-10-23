@@ -503,7 +503,10 @@ class GUI:
             with open(path,'w',newline='') as f:
                 w=csv.writer(f);w.writerow(['timestamp','label','object','raw_hex','decoded_value']);w.writerows(self.samples)
             self.info('Exported '+path)
-    def quit(self):self.disconnect();self.root.destroy()
+    def quit(self):
+        if self.dev:
+            self.dev.close();self.dev=None
+        self.root.destroy()
 
 if __name__=='__main__':
     root=tk.Tk();GUI(root);root.mainloop()

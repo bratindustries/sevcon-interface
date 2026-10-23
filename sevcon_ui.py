@@ -149,7 +149,8 @@ class GUI:
         ttk.Entry(settings,textvariable=self.data,width=38).pack(anchor='w',padx=12,pady=5)
         ttk.Label(settings,text='A confirmation window shows the current and requested values before any write. The application verifies the result by reading it back.',wraplength=900).pack(anchor='w',padx=12,pady=8)
         ttk.Button(settings,text='Apply change…',command=self.write_one).pack(anchor='w',padx=12,pady=6)
-        ttk.Label(settings,text='Changes may require controller security access. This tool does not bypass authorization or guarantee nonvolatile saving.',wraplength=900).pack(anchor='w',padx=12,pady=8)
+        ttk.Button(settings,text='Save to Controller…',command=self.save_controller).pack(anchor='w',padx=12,pady=6)
+        ttk.Label(settings,text='Saving is a separate operation using CANopen 1010:01. It may require Sevcon authorization and Pre-operational state. Acknowledgement is not a power-cycle persistence test.',wraplength=900).pack(anchor='w',padx=12,pady=8)
         self.update_selected()
         self.build_eds_tab(tabs)
         logframe=ttk.LabelFrame(root,text='Communication log');logframe.pack(fill='both',expand=False,padx=10,pady=6)
@@ -496,6 +497,39 @@ class GUI:
             if b!=raw:self.events.put(('ui',lambda:self.info('WARNING: read-back mismatch')))
             else:self.events.put(('ui',lambda:messagebox.showinfo('Verified','Controller read-back matches the requested value. Persistence after a restart is not confirmed.')))
         self.job(work)
+    def save_controller(self):
+        """Explicit CANopen 0x1010:01 store request; never called on parameter writes."""
+        if not self.dev or not self.verified:
+            messagebox.showwarning('Controller not verified',
+                'Connect and verify controller communication before saving.')
+            return
+        if self.busy:
+            messagebox.showwarning('Busy', 'Finish the current CANopen operation first.')
+            return
+        if not messagebox.askyesno(
+            'Save configuration to controller',
+            'Request permanent storage of the controller configuration?\\n\\n'
+            'CANopen 0x1010:01 receives the four-byte ASCII signature "save".\\n'
+            'This may require authorization and Pre-operational mode.\\n'
+            'The application will NOT automatically change controller state.\\n\\n'
+            'Proceed with the store request?'):
+            return
+        def work():
+            # 0x1010:01 accepts 0x65766173 as a little-endian UNSIGNED32.
+            # A positive SDO acknowledgement confirms receipt, not verified
+            # nonvolatile retention. Verification needs a later power cycle.
+            self.sdo(0x1010, 1, b'save')
+            self.events.put(('ui', lambda:self._save_acknowledged()))
+        self.job(work)
+
+    def _save_acknowledged(self):
+        self.info('Store parameters 1010:01 acknowledged. Persistence NOT tested.')
+        messagebox.showinfo(
+            'Save request acknowledged',
+            'The controller acknowledged the CANopen save request.\\n\\n'
+            'Nonvolatile retention is not yet verified. Power-cycle safely '
+            'and read back the settings to confirm persistence.')
+
     def export(self):
         if not self.samples:messagebox.showinfo('Nothing to export','Read some values first');return
         path=filedialog.asksaveasfilename(defaultextension='.csv',filetypes=[('CSV','*.csv')])

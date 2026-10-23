@@ -14,7 +14,7 @@ RATES = {"10000":0,"20000":1,"50000":2,"100000":3,"125000":4,"250000":5,"500000"
 
 class GVRETParser:
     """Incremental GVRET device-to-PC parser for classic CAN plus control replies."""
-    LENGTHS = {1:4, 6:10, 7:6, 9:2, 12:1, 13:15}
+    LENGTHS = {1:4, 6:10, 7:6, 12:1, 13:15}
 
     def __init__(self, on_frame, on_validation, on_bus_info):
         self.buf=bytearray()
@@ -31,6 +31,10 @@ class GVRETParser:
             if start:self.buf[:start]=b''
             if len(self.buf)<2:return
             command=self.buf[1]
+            if command==9:
+                del self.buf[:2]
+                self.on_validation()
+                continue
             if command==0:
                 if len(self.buf)<11:return
                 size=self.buf[10]&15
@@ -48,7 +52,6 @@ class GVRETParser:
                 total=2+self.LENGTHS[command]
                 if len(self.buf)<total:return
                 payload=bytes(self.buf[2:total]);del self.buf[:total]
-                if command==9 and payload==b'\xde\xad':self.on_validation()
                 if command==6:self.on_bus_info(payload)
             else:
                 # Unknown command cannot be decoded safely; resync.

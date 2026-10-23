@@ -6,6 +6,7 @@ from tkinter import ttk, messagebox, filedialog
 import serial
 from serial.tools import list_ports
 from eds_support import load_eds, decode as eds_decode, encode as eds_encode
+from can_adapters import ADAPTERS
 
 RATES = {"10000":0,"20000":1,"50000":2,"100000":3,"125000":4,"250000":5,"500000":6,"800000":7,"1000000":8}
 # Unit scaling verified for Gen4 battery voltage protection objects.
@@ -49,60 +50,6 @@ def volts_to_raw(index, sub, text):
     return count.to_bytes(2, "little")
 
 
-class Adapter:
-    def __init__(self, port, rate, eventq):
-        self.ser=serial.Serial(port,9600,timeout=.08)
-        self.q=eventq; self.lock=threading.Lock(); self.transaction_lock=threading.RLock(); self.acks=queue.Queue(); self.frames=queue.Queue(maxsize=256); self.active=True;self.failure=None
-        self.worker=threading.Thread(target=self._reader,daemon=True); self.worker.start()
-        try:
-            self.command(f'S{RATES[rate]}')
-            self.command('O')
-        except Exception:
-            self.close();raise
-    def _reader(self):
-        buf=bytearray()
-        while self.active:
-            try:
-                b=self.ser.read(1)
-                if not b: continue
-                if b in (b'\x06',b'\x15') and not buf:
-                    self.acks.put(b==b'\x06');continue
-                if b in (b'\r',b'\n'):
-                    if buf:
-                        line=bytes(buf).decode('ascii','replace');buf.clear()
-                        if len(line)>=5 and line[0] in ('T','t'):
-                            try:
-                                cid=int(line[1:4],16);n=int(line[4],16)
-                                data=bytes.fromhex(line[5:5+n*2])
-                                if len(data)==n:
-                                    if 0x580 <= cid <= 0x5FF:
-                                    try:self.frames.put_nowait((time.monotonic(),cid,data))
-                                    except queue.Full:self.q.put(('error','SDO receive queue overflow'))
-                                self.q.put(('frame',cid,data))
-                            except ValueError:pass
-                    continue
-                if len(buf)<256:buf.extend(b)
-                else:buf.clear()
-            except Exception as e:
-                if self.active:
-                    self.failure=str(e);self.q.put(('error',str(e)))
-                break
-    def command(self, value):
-        if not self.active or self.failure:raise ConnectionError('CANdapter unavailable: '+str(self.failure))
-        with self.lock:
-            while not self.acks.empty():self.acks.get_nowait()
-            self.ser.write((value+'\n').encode('ascii'))
-            try:success=self.acks.get(timeout=1.5)
-            except queue.Empty:raise TimeoutError('CANdapter did not acknowledge command')
-            if not success:raise RuntimeError('CANdapter rejected command: '+value[:1])
-    def send(self, cid, data):
-        self.command(f'T{cid:03X}{len(data):X}{data.hex().upper()}')
-    def close(self):
-        self.active=False
-        try:self.ser.write(b'C\n')
-        except Exception:pass
-        try:self.ser.close()
-        except Exception:pass
 
 class GUI:
     def __init__(self, root):
@@ -110,6 +57,10 @@ class GUI:
         self.dev=None;self.busy=False;self.events=queue.Queue();self.samples=[];self.last_read=None;self.session=0;self.verified=False;self.connected_node=None;self.last_sdo_timeout=0
         self.eds_entries=[];self.eds_visible=[];self.eds_last=None
         top=ttk.LabelFrame(root,text='Connection (Ewert CANdapter only)');top.pack(fill='x',padx=10,pady=6)
+        ttk.Label(top,text='Interface').pack(side='left',padx=5)
+        self.interface=tk.StringVar(value='Ewert CANdapter')
+        self.interface_widget=ttk.Combobox(top,textvariable=self.interface,values=list(ADAPTERS),state='readonly',width=18)
+        self.interface_widget.pack(side='left',padx=3)
         ttk.Label(top,text='COM port').pack(side='left',padx=5)
         self.port=tk.StringVar();self.ports=ttk.Combobox(top,textvariable=self.port,width=12);self.ports.pack(side='left')
         ttk.Button(top,text='Refresh',command=self.refresh_ports).pack(side='left',padx=4)
@@ -117,6 +68,11 @@ class GUI:
         self.rate=tk.StringVar(value='1000000');self.rate_widget=ttk.Combobox(top,textvariable=self.rate,values=list(RATES),width=11,state='readonly');self.rate_widget.pack(side='left')
         ttk.Label(top,text='Node ID').pack(side='left',padx=5)
         self.node=tk.StringVar(value='1');self.node_widget=ttk.Entry(top,textvariable=self.node,width=5);self.node_widget.pack(side='left')
+        ttk.Label(top,text='CAN bus').pack(side='left',padx=4)
+        self.can_bus=tk.StringVar(value='CAN0')
+        self.bus_widget=ttk.Combobox(top,textvariable=self.can_bus,values=['CAN0','CAN1'],state='disabled',width=5)
+        self.bus_widget.pack(side='left')
+        self.interface_widget.bind('<<ComboboxSelected>>',self._interface_changed)
         ttk.Button(top,text='Connect',command=self.connect).pack(side='left',padx=6)
         ttk.Button(top,text='Disconnect',command=self.disconnect).pack(side='left')
         ttk.Button(top,text='Verify controller',command=self.verify_controller).pack(side='left',padx=4)
@@ -376,11 +332,14 @@ class GUI:
         try:
             nid=self.node_id()
             if not self.port.get().strip():raise ValueError('Select a CANdapter serial port')
-            self.dev=Adapter(self.port.get(),self.rate.get(),self.events)
+            driver=ADAPTERS[self.interface.get()]
+            if self.interface.get()=='GVRET':
+                self.dev=driver(self.port.get(),self.rate.get(),self.events,bus=int(self.can_bus.get()[-1]))
+            else:self.dev=driver(self.port.get(),self.rate.get(),self.events)
             self.session+=1;self.connected_node=nid;self.verified=False
             self._connection_controls(True)
             self.status.set('CANdapter open — controller unverified')
-            self.info('CANdapter serial link opened. Controller communication NOT yet verified.')
+            self.info(self.interface.get()+' link opened. Controller communication NOT yet verified.')
             self.verify_controller()
         except Exception as e:
             if self.dev:self.dev.close()
@@ -389,10 +348,15 @@ class GUI:
             self.status.set('Disconnected')
             messagebox.showerror('Connection failed',str(e))
 
+    def _interface_changed(self,event=None):
+        self.bus_widget.configure(state='readonly' if self.interface.get()=='GVRET' and not self.dev else 'disabled')
+
     def _connection_controls(self,connected):
         self.ports.configure(state='disabled' if connected else 'normal')
         self.rate_widget.configure(state='disabled' if connected else 'readonly')
         self.node_widget.configure(state='disabled' if connected else 'normal')
+        self.interface_widget.configure(state='disabled' if connected else 'readonly')
+        self._interface_changed()
 
     def verify_controller(self):
         if not self.dev:

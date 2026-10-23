@@ -154,9 +154,9 @@ class EwertCANdapter:
                                 data=bytes.fromhex(line[5:5+n*2])
                                 if len(data)==n:
                                     if 0x580 <= cid <= 0x5FF:
-                                    try:self.frames.put_nowait((time.monotonic(),cid,data))
-                                    except queue.Full:self.q.put(('error','SDO receive queue overflow'))
-                                self.q.put(('frame',cid,data))
+                                        try:self.frames.put_nowait((time.monotonic(),cid,data))
+                                        except queue.Full:self.q.put(('error','SDO receive queue overflow'))
+                                    self.q.put(('frame',cid,data))
                             except ValueError:pass
                     continue
                 if len(buf)<256:buf.extend(b)

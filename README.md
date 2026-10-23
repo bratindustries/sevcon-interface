@@ -69,3 +69,7 @@ A positive SDO response means the store request was acknowledged, **not** that n
 ## Security tab (read-only)
 
 The **Security** tab offers **Refresh security information** to read Sevcon access level `0x5000:01`, controller operational-state diagnostic `0x5110:00`, and detailed error reason `0x5310:00`. Results include raw values; unknown and unsupported values are not guessed. Individual read failures are shown without interrupting the others. This tab never authenticates, changes NMT state or alters controller parameters. Object availability and semantics depend on firmware.
+
+## CAN communication hardening
+
+The adapter queues only SDO replies, with a bounded receive queue and timestamped messages. SDO requests are serialized; replies must match the selected node and CANopen index/subindex. Segmented reads validate toggles and response lengths. After an SDO timeout, the next request has a cooldown to reduce the risk of late responses being mistaken for new ones. The serial port, bitrate and node ID are locked while connected. A controller verification read is still point-in-time; continuous bus supervision and physical hardware tests are not yet implemented.

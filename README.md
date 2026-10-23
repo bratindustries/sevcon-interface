@@ -73,3 +73,7 @@ The **Security** tab offers **Refresh security information** to read Sevcon acce
 ## CAN communication hardening
 
 The adapter queues only SDO replies, with a bounded receive queue and timestamped messages. SDO requests are serialized; replies must match the selected node and CANopen index/subindex. Segmented reads validate toggles and response lengths. After an SDO timeout, the next request has a cooldown to reduce the risk of late responses being mistaken for new ones. The serial port, bitrate and node ID are locked while connected. A controller verification read is still point-in-time; continuous bus supervision and physical hardware tests are not yet implemented.
+
+## Security authorization
+
+Security tab now supports optional **Authorize…** using a controller-specific **pre-encoded** response entered as hexadecimal (1, 2 or 4 bytes), and optional user ID. The UI masks the response and clears it immediately after submission. It writes optional user ID to `0x5000:03`, then the provided response to `0x5000:02`, and reads `0x5000:01` to display the resulting security level. The tool does **not** derive the response from a plain password, discover keys, bypass access or change NMT state. A compatible authorization value and object layout must be supplied for the actual firmware; authentication remains untested on hardware. Invalid attempts may be rejected or logged by the controller.

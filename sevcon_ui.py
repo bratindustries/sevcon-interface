@@ -52,7 +52,7 @@ def volts_to_raw(index, sub, text):
 class Adapter:
     def __init__(self, port, rate, eventq):
         self.ser=serial.Serial(port,9600,timeout=.08)
-        self.q=eventq; self.lock=threading.Lock(); self.acks=queue.Queue(); self.frames=queue.Queue(); self.active=True
+        self.q=eventq; self.lock=threading.Lock(); self.transaction_lock=threading.RLock(); self.acks=queue.Queue(); self.frames=queue.Queue(maxsize=256); self.active=True;self.failure=None
         self.worker=threading.Thread(target=self._reader,daemon=True); self.worker.start()
         try:
             self.command(f'S{RATES[rate]}')
@@ -75,15 +75,20 @@ class Adapter:
                                 cid=int(line[1:4],16);n=int(line[4],16)
                                 data=bytes.fromhex(line[5:5+n*2])
                                 if len(data)==n:
-                                    self.frames.put((cid,data));self.q.put(('frame',cid,data))
+                                    if 0x580 <= cid <= 0x5FF:
+                                    try:self.frames.put_nowait((time.monotonic(),cid,data))
+                                    except queue.Full:self.q.put(('error','SDO receive queue overflow'))
+                                self.q.put(('frame',cid,data))
                             except ValueError:pass
                     continue
                 if len(buf)<256:buf.extend(b)
                 else:buf.clear()
             except Exception as e:
-                if self.active:self.q.put(('error',str(e)))
+                if self.active:
+                    self.failure=str(e);self.q.put(('error',str(e)))
                 break
     def command(self, value):
+        if not self.active or self.failure:raise ConnectionError('CANdapter unavailable: '+str(self.failure))
         with self.lock:
             while not self.acks.empty():self.acks.get_nowait()
             self.ser.write((value+'\n').encode('ascii'))
@@ -102,16 +107,16 @@ class Adapter:
 class GUI:
     def __init__(self, root):
         self.root=root;root.title('Sevcon Gen4 — CANdapter CANopen');root.geometry('1030x770')
-        self.dev=None;self.busy=False;self.events=queue.Queue();self.samples=[];self.last_read=None;self.session=0;self.verified=False;self.connected_node=None
+        self.dev=None;self.busy=False;self.events=queue.Queue();self.samples=[];self.last_read=None;self.session=0;self.verified=False;self.connected_node=None;self.last_sdo_timeout=0
         self.eds_entries=[];self.eds_visible=[];self.eds_last=None
         top=ttk.LabelFrame(root,text='Connection (Ewert CANdapter only)');top.pack(fill='x',padx=10,pady=6)
         ttk.Label(top,text='COM port').pack(side='left',padx=5)
         self.port=tk.StringVar();self.ports=ttk.Combobox(top,textvariable=self.port,width=12);self.ports.pack(side='left')
         ttk.Button(top,text='Refresh',command=self.refresh_ports).pack(side='left',padx=4)
         ttk.Label(top,text='CAN bitrate').pack(side='left',padx=5)
-        self.rate=tk.StringVar(value='1000000');ttk.Combobox(top,textvariable=self.rate,values=list(RATES),width=11,state='readonly').pack(side='left')
+        self.rate=tk.StringVar(value='1000000');self.rate_widget=ttk.Combobox(top,textvariable=self.rate,values=list(RATES),width=11,state='readonly');self.rate_widget.pack(side='left')
         ttk.Label(top,text='Node ID').pack(side='left',padx=5)
-        self.node=tk.StringVar(value='1');ttk.Entry(top,textvariable=self.node,width=5).pack(side='left')
+        self.node=tk.StringVar(value='1');self.node_widget=ttk.Entry(top,textvariable=self.node,width=5);self.node_widget.pack(side='left')
         ttk.Button(top,text='Connect',command=self.connect).pack(side='left',padx=6)
         ttk.Button(top,text='Disconnect',command=self.disconnect).pack(side='left')
         ttk.Button(top,text='Verify controller',command=self.verify_controller).pack(side='left',padx=4)
@@ -307,14 +312,21 @@ class GUI:
             if not self.port.get().strip():raise ValueError('Select a CANdapter serial port')
             self.dev=Adapter(self.port.get(),self.rate.get(),self.events)
             self.session+=1;self.connected_node=nid;self.verified=False
+            self._connection_controls(True)
             self.status.set('CANdapter open — controller unverified')
             self.info('CANdapter serial link opened. Controller communication NOT yet verified.')
             self.verify_controller()
         except Exception as e:
             if self.dev:self.dev.close()
             self.dev=None
+            self._connection_controls(False)
             self.status.set('Disconnected')
             messagebox.showerror('Connection failed',str(e))
+
+    def _connection_controls(self,connected):
+        self.ports.configure(state='disabled' if connected else 'normal')
+        self.rate_widget.configure(state='disabled' if connected else 'readonly')
+        self.node_widget.configure(state='disabled' if connected else 'normal')
 
     def verify_controller(self):
         if not self.dev:
@@ -338,6 +350,7 @@ class GUI:
             messagebox.showwarning('Busy','Wait until the active CANopen request finishes.');return
         if self.dev:self.dev.close();self.dev=None
         self.session+=1;self.verified=False;self.connected_node=None
+        self._connection_controls(False)
         self.last_read=None;self.eds_last=None
         for field in getattr(self,'security_values',{}).values():field.set('Not read')
         self.status.set('Disconnected')
@@ -368,63 +381,70 @@ class GUI:
         threading.Thread(target=wrapper,daemon=True).start()
     def _job_error(self,e):
         self.info('ERROR: '+str(e))
-        if not self.verified:
+        if isinstance(e,(TimeoutError,ConnectionError)):
+            self.verified=False
             self.status.set('CANdapter open — controller not responding')
 
     def sdo(self,index,sub,raw=None):
-        """Read/write one CANopen SDO. Uploads support expedited and segmented values."""
+        """One SDO transaction at a time; validate response and segment toggles."""
+        dev=self.dev
         nid=self.connected_node
-        if nid is None or not self.dev:raise ConnectionError('CANdapter disconnected')
-        # Drain stale transaction responses before sending a fresh request.
-        # Other CAN traffic is already delivered separately to the UI event queue.
-        while True:
-            try:self.dev.frames.get_nowait()
-            except queue.Empty:break
-        if raw is None:frame=bytes([0x40,index&255,index>>8,sub,0,0,0,0])
-        else:
-            if len(raw) not in (1,2,4):raise ValueError('Write must be 1, 2, or 4 bytes')
-            frame=bytes([0x23+(4-len(raw))*4,index&255,index>>8,sub])+raw.ljust(4,bytes(1))
-        def reply(expected_index=True):
-            end=time.monotonic()+2.5
-            while time.monotonic()<end:
-                try:cid,r=self.dev.frames.get(timeout=min(.1,max(.01,end-time.monotonic())))
-                except queue.Empty:continue
-                if cid!=0x580+nid or len(r)!=8:continue
-                if expected_index and r[1:4]!=frame[1:4]:continue
-                if r[0]==0x80:
-                    raise RuntimeError(f'SDO abort 0x{int.from_bytes(r[4:8],"little"):08X} at {index:04X}:{sub:02X}')
-                return r
-            raise TimeoutError(f'No SDO response to {index:04X}:{sub:02X}; check bitrate and node ID')
-        self.dev.send(0x600+nid,frame)
-        r=reply()
-        if raw is not None:
-            if r[0]!=0x60:raise ValueError('Unexpected SDO write reply '+r.hex())
-            return raw
-        if r[0]&0xE0!=0x40:raise ValueError('Unexpected SDO reply '+r.hex())
-        if r[0]&0x02:
-            length=4-((r[0]>>2)&3) if r[0]&1 else 4
-            return r[4:4+length]
-        # Segmented SDO upload: alternate the toggle bit and collect up to 4096 bytes.
-        declared=int.from_bytes(r[4:8],'little') if r[0]&1 else None
-        if declared is not None and declared>4096:
-            raise ValueError('SDO response exceeds 4096-byte diagnostic limit')
-        parts=bytearray();toggle=0
-        for _ in range(586):
-            self.dev.send(0x600+nid,bytes([0x60 | (toggle<<4)])+bytes(7))
-            segment=reply(expected_index=False)
-            if segment[0]&0xE0!=0 or ((segment[0]>>4)&1)!=toggle:
-                raise ValueError('Invalid segmented SDO response or toggle bit')
-            last=bool(segment[0]&1)
-            unused=(segment[0]>>1)&7 if last else 0
-            if unused>7:raise ValueError('Invalid segmented SDO length')
-            parts.extend(segment[1:8-unused])
-            if len(parts)>4096:raise ValueError('Segmented SDO exceeds 4096 bytes')
-            if last:
-                if declared is not None and len(parts)!=declared:
-                    raise ValueError('Segmented SDO declared size does not match received data')
-                return bytes(parts)
-            toggle^=1
-        raise TimeoutError('Segmented SDO did not terminate')
+        if nid is None or dev is None:raise ConnectionError('CANdapter disconnected')
+        if not 0<=index<=65535 or not 0<=sub<=255:raise ValueError('Invalid SDO address')
+        if raw is not None and len(raw) not in (1,2,4):raise ValueError('Write must be 1, 2 or 4 bytes')
+        with dev.transaction_lock:
+            if dev is not self.dev or not dev.active:raise ConnectionError('CANdapter connection changed')
+            cooldown=self.last_sdo_timeout+2.6-time.monotonic()
+            if cooldown>0:time.sleep(cooldown)
+            while True:
+                try:dev.frames.get_nowait()
+                except queue.Empty:break
+            address=bytes((index&255,index>>8,sub))
+            frame=(bytes((0x40,))+address+bytes(4)) if raw is None else (
+                bytes((0x23+(4-len(raw))*4,))+address+raw.ljust(4,bytes(1)))
+            def reply(check_address,sent_at):
+                deadline=time.monotonic()+2.5
+                while time.monotonic()<deadline:
+                    if dev is not self.dev or not dev.active or dev.failure:
+                        raise ConnectionError('CANdapter disconnected during SDO')
+                    try:ts,cid,r=dev.frames.get(timeout=min(.1,max(.01,deadline-time.monotonic())))
+                    except queue.Empty:continue
+                    if ts<sent_at or cid!=0x580+nid or len(r)!=8:continue
+                    if check_address and r[1:4]!=address:continue
+                    if r[0]==0x80:
+                        if r[1:4]!=address:continue
+                        raise RuntimeError(f'SDO abort 0x{int.from_bytes(r[4:8],"little"):08X} at {index:04X}:{sub:02X}')
+                    return r
+                self.last_sdo_timeout=time.monotonic()
+                raise TimeoutError(f'No SDO response to {index:04X}:{sub:02X}; check bitrate and node ID')
+            sent=time.monotonic();dev.send(0x600+nid,frame)
+            r=reply(True,sent)
+            if raw is not None:
+                if r[0]!=0x60:raise ValueError('Unexpected write acknowledgement '+r.hex())
+                return raw
+            if r[0]&0xE0!=0x40:raise ValueError('Unexpected SDO upload response '+r.hex())
+            if r[0]&0x02:
+                length=4-((r[0]>>2)&3) if r[0]&1 else 4
+                return r[4:4+length]
+            declared=int.from_bytes(r[4:8],'little') if r[0]&1 else None
+            if declared is not None and declared>4096:raise ValueError('SDO response exceeds 4096 bytes')
+            parts=bytearray();toggle=0
+            for _ in range(586):
+                sent=time.monotonic()
+                dev.send(0x600+nid,bytes((0x60|(toggle<<4),))+bytes(7))
+                segment=reply(False,sent)
+                if segment[0]&0xE0!=0 or ((segment[0]>>4)&1)!=toggle:
+                    raise ValueError('Invalid segmented SDO response or toggle')
+                last=bool(segment[0]&1)
+                unused=(segment[0]>>1)&7 if last else 0
+                parts.extend(segment[1:8-unused])
+                if len(parts)>4096:raise ValueError('Segmented SDO exceeds 4096 bytes')
+                if last:
+                    if declared is not None and len(parts)!=declared:
+                        raise ValueError('Segmented SDO size mismatch')
+                    return bytes(parts)
+                toggle^=1
+            raise TimeoutError('Segmented SDO did not terminate')
 
     def _fault_selector_write(self,index,sub,value,lengths=(1,2,4)):
         """Select a Sevcon diagnostic entry, trying permitted expedited widths."""

@@ -289,7 +289,7 @@ class GUI:
         if not self.dev:return
         self.verified=True
         self.status.set(f'Controller verified — node {self.connected_node}')
-        self.info(f'Sevcon CANopen SDO reply confirmed: identity vendor 0x{vendor_id:X}')
+        self.info(f'CANopen controller SDO reply confirmed: identity vendor 0x{vendor_id:X}')
 
     def disconnect(self):
         if self.busy:
@@ -332,17 +332,15 @@ class GUI:
         """Read/write one CANopen SDO. Uploads support expedited and segmented values."""
         nid=self.connected_node
         if nid is None or not self.dev:raise ConnectionError('CANdapter disconnected')
-        # Drop only stale SDO responses, preserve unrelated CAN frames.
-        pending=[]
+        # Drain stale transaction responses before sending a fresh request.
+        # Other CAN traffic is already delivered separately to the UI event queue.
         while True:
-            try:cid,data=self.dev.frames.get_nowait()
+            try:self.dev.frames.get_nowait()
             except queue.Empty:break
-            if cid!=0x580+nid:pending.append((cid,data))
-        for item in pending:self.dev.frames.put(item)
         if raw is None:frame=bytes([0x40,index&255,index>>8,sub,0,0,0,0])
         else:
             if len(raw) not in (1,2,4):raise ValueError('Write must be 1, 2, or 4 bytes')
-            frame=bytes([0x23+(4-len(raw))*4,index&255,index>>8,sub])+raw.ljust(4,b'\\0')
+            frame=bytes([0x23+(4-len(raw))*4,index&255,index>>8,sub])+raw.ljust(4,bytes(1))
         def reply(expected_index=True):
             end=time.monotonic()+2.5
             while time.monotonic()<end:
@@ -400,7 +398,7 @@ class GUI:
         # The controller itself supplies the description through 5610:02.
         self._fault_selector_write(0x5610,1,fault_id)
         raw=self.sdo(0x5610,2)
-        return raw.split(b'\\0',1)[0].decode('utf-8','replace').strip() or '(empty fault description)'
+        return raw.split(bytes(1),1)[0].decode('utf-8','replace').strip() or '(empty fault description)'
 
     def _show_fault(self,priority,fault_id,description,raw):
         self.tree.insert('','end',values=(

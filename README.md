@@ -59,3 +59,9 @@ Tests: `python -m unittest discover -s tests -v`
 ## Communication verification
 
 **Connect** opens the Ewert CANdapter serial link and then requests CANopen identity object `0x1018:01` using the selected node ID. The status first reports **CANdapter open — controller unverified**; only a valid SDO response changes it to **Controller verified**. An adapter acknowledgement by itself does not prove controller communication. Use **Verify controller** to repeat the request. A timeout reports controller not responding; check CAN bitrate, node ID, wiring and power. Status verification is a point-in-time check, not ongoing heartbeat supervision. The app has not yet been hardware-tested.
+
+## Save to Controller (nonvolatile store request)
+
+The **Settings** tab has a separate **Save to Controller…** button. It requires a successfully verified controller connection and an explicit confirmation. It sends the standard CANopen store signature (ASCII `save`, little-endian value `0x65766173`) to object `0x1010:01` via an expedited SDO write. The app never invokes this automatically after changing a parameter.
+
+A positive SDO response means the store request was acknowledged, **not** that nonvolatile retention was independently verified. Safely power-cycle and reread parameters to verify persistence. The controller may reject this request because of its security access level or required NMT state; the app does not bypass access or change NMT state automatically. Use only with the motor disabled.

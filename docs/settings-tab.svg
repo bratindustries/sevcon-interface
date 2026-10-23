@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="810" viewBox="0 0 1060 810">
+<rect width="1060" height="810" fill="#d9d9d9"/>
+<g font-family="Arial, sans-serif" font-size="14" fill="#111">
+<rect x="10" y="17" width="1010" height="44" fill="none" stroke="#999"/>
+<rect x="18" y="10" width="245" height="17" fill="#d9d9d9"/>
+<text x="18" y="22">Connection (Ewert CANdapter only)</text>
+<text x="18" y="49">COM port</text><rect x="89" y="30" width="113" height="25" fill="#fff" stroke="#aaa"/>
+<rect x="208" y="28" width="81" height="29" fill="#ececec" stroke="#aaa"/><text x="222" y="48">Refresh</text>
+<text x="299" y="48">CAN bitrate</text><rect x="383" y="30" width="105" height="25" fill="#fff" stroke="#aaa"/>
+<text x="497" y="48">Node ID</text><rect x="554" y="30" width="47" height="25" fill="#fff" stroke="#aaa"/>
+<rect x="607" y="28" width="83" height="30" fill="#ececec" stroke="#aaa"/><text x="621" y="48">Connect</text>
+<rect x="696" y="28" width="85" height="30" fill="#ececec" stroke="#aaa"/><text x="700" y="48">Disconnect</text>
+<rect x="787" y="28" width="116" height="30" fill="#ececec" stroke="#aaa"/><text x="792" y="48">Verify controller</text>
+<text x="914" y="48">Disconnected</text>
+<rect x="10" y="72" width="164" height="28" fill="#e8e8e8" stroke="#aaa"/><text x="17" y="91">Faults and diagnostics</text>
+<rect x="174" y="72" width="66" height="28" fill="#f5f5f5" stroke="#aaa"/><text x="179" y="91">Settings</text>
+<rect x="240" y="72" width="96" height="28" fill="#e8e8e8" stroke="#aaa"/><text x="246" y="91">EDS browser</text>
+<rect x="336" y="72" width="75" height="28" fill="#e8e8e8" stroke="#aaa"/><text x="340" y="91">Security</text>
+<rect x="10" y="100" width="1010" height="488" fill="none" stroke="#999"/>
+<text x="24" y="127">Select a battery setting. Values are displayed in volts, with the original CANopen bytes shown below.</text>
+<text x="27" y="168">Setting</text>
+<rect x="86" y="151" width="320" height="25" fill="#fff" stroke="#aaa"/><text x="90" y="168">Nominal battery voltage</text>
+<rect x="420" y="148" width="96" height="31" fill="#ececec" stroke="#aaa"/><text x="428" y="168">Read setting</text>
+<text x="27" y="209">Index hex</text><rect x="102" y="190" width="85" height="26" fill="#fff" stroke="#ddd"/><text x="106" y="209">2C00</text>
+<text x="192" y="209">Subindex hex</text><rect x="290" y="190" width="70" height="26" fill="#fff" stroke="#ddd"/><text x="294" y="209">00</text>
+<text x="24" y="248" font-family="monospace" font-size="16">Current value: not read</text>
+<line x1="10" y1="272" x2="1020" y2="272" stroke="#fff"/>
+<text x="24" y="299">New voltage (V):</text>
+<rect x="24" y="311" width="308" height="25" fill="#fff" stroke="#ddd"/>
+<text x="24" y="366">A confirmation window shows the current and requested values before any write. The application verifies the result by reading it</text>
+<text x="24" y="385">back.</text>
+<rect x="24" y="405" width="113" height="31" fill="#ececec" stroke="#aaa"/><text x="28" y="426">Apply change...</text>
+<rect x="24" y="449" width="140" height="30" fill="#ececec" stroke="#aaa"/><text x="28" y="469">Save to Controller...</text>
+<text x="24" y="508">Saving is a separate operation using CANopen 1010:01. It may require Sevcon authorization and Pre-operational state.</text>
+<text x="24" y="530">Acknowledgement is not a power-cycle persistence test.</text>
+<rect x="10" y="610" width="1010" height="154" fill="none" stroke="#999"/>
+<rect x="18" y="601" width="136" height="18" fill="#d9d9d9"/><text x="18" y="616">Communication log</text>
+<rect x="13" y="623" width="1004" height="139" fill="#fff" stroke="#aaa"/>
+</g></svg>

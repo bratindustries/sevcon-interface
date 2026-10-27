@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -48,3 +48,23 @@ jobs:
           path: dist/SevconGen4.exe
           if-no-files-found: error
           retention-days: 30
+      - name: Publish GitHub pre-release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "v0.1.0-preview"
+          $notes = @"
+          Windows x64 preview of Sevcon Gen4 CANopen Utility.
+
+          Features: Ewert CANdapter and GVRET interfaces, diagnostics and active fault decoding, EDS browsing, parameter editing, security authorization interface, and manual parameter store.
+
+          This release is experimental, unsigned, and has NOT been validated against a physical Sevcon motor controller or CAN adapter. Keep propulsion disabled during initial testing.
+          "@
+          gh release view $tag --repo ${{ github.repository }} *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release already exists; retaining its existing tag and assets."
+          } else {
+            gh release create $tag "dist/SevconGen4.exe" --repo ${{ github.repository }} --target "${{ github.sha }}" --title "Sevcon Gen4 v0.1.0 Preview (Windows x64)" --notes $notes --prerelease
+          }

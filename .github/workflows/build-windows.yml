@@ -1,0 +1,50 @@
+name: Build Windows executable
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+      - name: Check Python syntax
+        run: python -m compileall -q sevcon_ui.py can_adapters.py eds_support.py
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Compile Windows executable
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name SevconGen4 sevcon_ui.py
+      - name: Check build output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/SevconGen4.exe")) { throw "Windows executable not found" }
+          Get-Item "dist/SevconGen4.exe" | Select-Object Name, Length
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: SevconGen4-Windows-x64
+          path: dist/SevconGen4.exe
+          if-no-files-found: error
+          retention-days: 30

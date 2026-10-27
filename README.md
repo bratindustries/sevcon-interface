@@ -37,6 +37,10 @@ python sevcon_ui.py
 
 Windows may use `py` instead of `python`.
 
+## Windows preview release
+
+The Windows build workflow publishes a **v0.1.0-preview** pre-release with `SevconGen4.exe` after its syntax checks, tests, and Windows packaging succeed. Check [GitHub Releases](https://github.com/bratindustries/sevcon-interface/releases) for the published binary. If the workflow fails, no release is created. This is unsigned experimental software and is not hardware validated.
+
 ## Download a Windows build
 
 GitHub Actions builds a 64-bit Windows executable from `main` using the [Build Windows executable](../../actions/workflows/build-windows.yml) workflow. Open the latest successful workflow run and download the **SevconGen4-Windows-x64** artifact under **Artifacts**. Extract `SevconGen4.exe` from the ZIP; no Python installation is required to run that executable. You can also trigger the workflow manually using **Run workflow**.

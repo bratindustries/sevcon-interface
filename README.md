@@ -37,6 +37,12 @@ python sevcon_ui.py
 
 Windows may use `py` instead of `python`.
 
+## Download a Windows build
+
+GitHub Actions builds a 64-bit Windows executable from `main` using the [Build Windows executable](../../actions/workflows/build-windows.yml) workflow. Open the latest successful workflow run and download the **SevconGen4-Windows-x64** artifact under **Artifacts**. Extract `SevconGen4.exe` from the ZIP; no Python installation is required to run that executable. You can also trigger the workflow manually using **Run workflow**.
+
+The workflow checks Python syntax and runs unit tests before packaging. An uploaded artifact means packaging completed, **not** that CANdapter or GVRET hardware has been tested. Windows may display an unsigned-app warning.
+
 ## Package for your OS
 
 Install `pyinstaller` in your build environment, then build on the target OS:
